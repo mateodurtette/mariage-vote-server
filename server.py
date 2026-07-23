@@ -14,11 +14,16 @@ app.add_middleware(
 )
 
 music_state = {
-    "current_track": {"title": "Chargement...", "artist": "", "remaining_seconds": 0},
-    "next_track": {"title": "Chargement...", "artist": "", "cover": "", "track_id": ""},
-    "suggested_track": None
+    "current_title": "Chargement...",
+    "current_artist": "",
+    "current_remaining_seconds": 0,
+    "next_title": "Chargement...",
+    "next_artist": "",
+    "next_cover": "",
+    "next_track_id": ""
 }
 
+suggested_song = None
 votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
 
 class StateUpdate(BaseModel):
@@ -35,23 +40,21 @@ class SuggestionRequest(BaseModel):
 
 @app.post("/api/update-state")
 def update_state(data: StateUpdate):
-    global music_state, votes
+    global music_state, votes, suggested_song
     
-    # Réinitialiser les votes si la chanson suivante change
-    if data.next_track_id != music_state["next_track"]["track_id"]:
+    # Si la chanson suivante change, on réinitialise les votes
+    if data.next_track_id != music_state["next_track_id"]:
         votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
-        music_state["suggested_track"] = None
+        suggested_song = None
     
-    music_state["current_track"] = {
-        "title": data.current_title,
-        "artist": data.current_artist,
-        "remaining_seconds": data.current_remaining_seconds
-    }
-    music_state["next_track"] = {
-        "title": data.next_title,
-        "artist": data.next_artist,
-        "cover": data.cover,
-        "track_id": data.next_track_id
+    music_state = {
+        "current_title": data.current_title,
+        "current_artist": data.current_artist,
+        "current_remaining_seconds": data.current_remaining_seconds,
+        "next_title": data.next_title,
+        "next_artist": data.next_artist,
+        "next_cover": data.next_cover,
+        "next_track_id": data.next_track_id
     }
     return {"status": "ok"}
 
@@ -59,22 +62,21 @@ def update_state(data: StateUpdate):
 def get_state():
     return {
         "state": music_state,
+        "suggested_song": suggested_song,
         "votes": {"upvotes": votes["upvotes"], "downvotes": votes["downvotes"]}
     }
 
 @app.post("/api/suggest-song")
 def suggest_song(data: SuggestionRequest):
-    if not music_state["suggested_track"]:
-        music_state["suggested_track"] = {"title": data.song_name, "votes": 1}
-    else:
-        music_state["suggested_track"]["votes"] += 1
+    global suggested_song
+    suggested_song = data.song_name
     return {"status": "ok"}
 
 @app.post("/api/vote/{vote_type}")
 def vote(vote_type: str, request: Request):
     client_ip = request.client.host
     
-    if music_state["current_track"]["remaining_seconds"] <= 30:
+    if music_state["current_remaining_seconds"] <= 30:
         return {"status": "closed", "message": "Les votes sont clos !"}
 
     if client_ip in votes["voted_ips"]:
@@ -124,7 +126,7 @@ def read_root():
             
             /* Section Suggestion */
             .suggest-box { background: #252525; padding: 12px; border-radius: 12px; margin-top: 15px; font-size: 0.85rem; }
-            .suggest-input { width: 65%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
+            .suggest-input { width: 60%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
             .suggest-btn { padding: 8px 12px; border-radius: 20px; border: none; background: #1db954; color: white; font-weight: bold; cursor: pointer; margin-left: 5px; }
             .suggestion-display { background: #333; padding: 8px; border-radius: 8px; margin-top: 8px; color: #ffca28; }
 
@@ -133,21 +135,21 @@ def read_root():
     </head>
     <body>
         <div class="card">
-            <!-- 1. Musique actuelle avec Timer dédié -->
+            <!-- 1. En ce moment dans la salle -->
             <div class="now-playing">
                 🔊 <b>EN CE MOMENT DANS LA SALLE :</b><br>
                 <span id="current-title" class="now-playing-title">Chargement...</span> - <span id="current-artist"></span>
                 <span class="now-playing-timer">⏱️ Fin de la chanson dans : <span id="current-timer">--:--</span></span>
             </div>
 
-            <!-- 2. En-tête Mariage -->
+            <!-- 2. Titre Mariage -->
             <div class="header-title">💒 MARIAGE DE LAURIANE ET MATEO</div>
             <div class="header-subtitle">prochaine chanson prévue :</div>
 
             <!-- Timer du vote -->
-            <div id="timer-container" class="timer-box">⏱️ Vote clos dans : <span id="timer">--</span>s</div><br>
+            <div id="timer-container" class="timer-box">⏱️ Vote clos dans : <span id="timer">--</span></div><br>
 
-            <img id="cover" src="https://via.placeholder.com/170?text=Prochaine+Chanson" alt="Pochette">
+            <img id="cover" src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300" alt="Pochette">
             <h2 id="title">Chargement...</h2>
             <p id="artist"></p>
             
@@ -177,7 +179,6 @@ def read_root():
             let isClosed = false;
             let currentRemainingSec = 0;
 
-            // Formater les secondes en minutes:secondes (ex: 2:15)
             function formatTime(seconds) {
                 if (seconds <= 0) return "0:00";
                 const mins = Math.floor(seconds / 60);
@@ -190,29 +191,30 @@ def read_root():
                     const res = await fetch('/api/get-state');
                     const data = await res.json();
                     
-                    const current = data.state.current_track;
-                    const next = data.state.next_track;
+                    const state = data.state;
                     const votes = data.votes;
-                    const suggestion = data.state.suggested_track;
+                    const suggestion = data.suggested_song;
 
-                    // Mise à jour Chanson Actuelle
-                    document.getElementById('current-title').innerText = current.title;
-                    document.getElementById('current-artist').innerText = current.artist;
-                    currentRemainingSec = current.remaining_seconds;
+                    // 1. Chanson en cours
+                    document.getElementById('current-title').innerText = state.current_title;
+                    document.getElementById('current-artist').innerText = state.current_artist;
+                    currentRemainingSec = state.current_remaining_seconds;
                     document.getElementById('current-timer').innerText = formatTime(currentRemainingSec);
 
-                    // Prochaine chanson
-                    if (next.track_id && next.track_id !== currentTrackId) {
-                        currentTrackId = next.track_id;
+                    // 2. Chanson suivante
+                    if (state.next_track_id && state.next_track_id !== currentTrackId) {
+                        currentTrackId = state.next_track_id;
                         localStorage.removeItem('voted_' + currentTrackId);
                         enableButtons();
                     }
 
-                    document.getElementById('title').innerText = next.title;
-                    document.getElementById('artist').innerText = next.artist;
-                    if (next.cover) document.getElementById('cover').src = next.cover;
+                    document.getElementById('title').innerText = state.next_title;
+                    document.getElementById('artist').innerText = state.next_artist;
+                    if (state.next_cover) {
+                        document.getElementById('cover').src = state.next_cover;
+                    }
 
-                    // Timer du vote (Fermeture à T-30s)
+                    // 3. Timer de Vote
                     const votingTimeLeft = currentRemainingSec - 30;
 
                     if (votingTimeLeft > 0) {
@@ -230,10 +232,10 @@ def read_root():
                     document.getElementById('up-count').innerText = votes.upvotes;
                     document.getElementById('down-count').innerText = votes.downvotes;
 
-                    // Afficher la suggestion
+                    // 4. Suggestion
                     if (suggestion) {
                         document.getElementById('suggestion-area').style.display = 'block';
-                        document.getElementById('suggested-song-name').innerText = suggestion.title;
+                        document.getElementById('suggested-song-name').innerText = suggestion;
                     } else {
                         document.getElementById('suggestion-area').style.display = 'none';
                     }
@@ -280,7 +282,7 @@ def read_root():
                 document.getElementById('status-msg').innerText = "";
             }
 
-            // Timer local chaque seconde
+            // Décompte local chaque seconde
             setInterval(() => {
                 if (currentRemainingSec > 0) {
                     currentRemainingSec--;
@@ -288,8 +290,8 @@ def read_root():
                 }
             }, 1000);
 
-            // Synchronisation réseau toutes les 2 secondes
-            setInterval(refreshData, 2000);
+            // Synchronisation réseau
+            setInterval(refreshData, 1500);
             refreshData();
         </script>
     </body>
