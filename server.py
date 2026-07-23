@@ -5,7 +5,6 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Permet à n'importe quel téléphone/navigateur de se connecter
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,15 +13,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Stockage temporaire en mémoire
-current_track = {
-    "title": "En attente du début de soirée...",
+current_next_track = {
+    "title": "Chargement de la prochaine chanson...",
     "artist": "",
     "cover": "",
     "track_id": ""
 }
 
-votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
+votes = {"upvotes": 0, "downvotes": 0}
 
 class TrackUpdate(BaseModel):
     title: str
@@ -30,14 +28,14 @@ class TrackUpdate(BaseModel):
     cover: str
     track_id: str
 
-@app.post("/api/update-track")
-def update_track(data: TrackUpdate):
-    global current_track, votes
-    # Si la chanson a changé, on réinitialise les votes
-    if data.track_id != current_track["track_id"]:
-        votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
+@app.post("/api/update-next-track")
+def update_next_track(data: TrackUpdate):
+    global current_next_track, votes
+    # Si le morceau à venir a changé, on réinitialise les votes pour la nouvelle chanson
+    if data.track_id != current_next_track["track_id"]:
+        votes = {"upvotes": 0, "downvotes": 0}
     
-    current_track = {
+    current_next_track = {
         "title": data.title,
         "artist": data.artist,
         "cover": data.cover,
@@ -45,13 +43,13 @@ def update_track(data: TrackUpdate):
     }
     return {"status": "ok"}
 
-@app.get("/api/get-track")
-def get_track():
-    return current_track
+@app.get("/api/get-next-track")
+def get_next_track():
+    return current_next_track
 
 @app.get("/api/get-votes")
 def get_votes():
-    return {"upvotes": votes["upvotes"], "downvotes": votes["downvotes"]}
+    return votes
 
 @app.post("/api/vote/{vote_type}")
 def vote(vote_type: str):
@@ -73,9 +71,10 @@ def read_root():
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #121212; color: white; text-align: center; padding: 20px; margin: 0; }
             .card { background: #1e1e1e; padding: 20px; border-radius: 16px; max-width: 350px; margin: 20px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+            .subtitle { font-size: 0.9rem; color: #1db954; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
             img { width: 200px; height: 200px; border-radius: 12px; object-fit: cover; margin-bottom: 15px; }
-            h1 { font-size: 1.2rem; color: #1db954; margin-bottom: 5px; }
-            h2 { font-size: 1.4rem; margin: 10px 0 5px; }
+            h1 { font-size: 1.2rem; color: #ffffff; margin-bottom: 5px; }
+            h2 { font-size: 1.3rem; margin: 10px 0 5px; }
             p { color: #b3b3b3; margin: 0 0 20px; }
             .btn-container { display: flex; justify-content: center; gap: 15px; }
             button { font-size: 1.5rem; padding: 12px 24px; border: none; border-radius: 30px; cursor: pointer; transition: transform 0.1s; }
@@ -86,8 +85,8 @@ def read_root():
     </head>
     <body>
         <div class="card">
-            <h1>💍 Mariage - Prochaine Chanson</h1>
-            <img id="cover" src="https://via.placeholder.com/200?text=Musique" alt="Pochette">
+            <div class="subtitle">⏭️ À venir dans la soirée</div>
+            <img id="cover" src="https://via.placeholder.com/200?text=Prochaine+Chanson" alt="Pochette">
             <h2 id="title">Chargement...</h2>
             <p id="artist"></p>
             <div class="btn-container">
@@ -99,7 +98,7 @@ def read_root():
         <script>
             async function refreshData() {
                 try {
-                    const trackRes = await fetch('/api/get-track');
+                    const trackRes = await fetch('/api/get-next-track');
                     const track = await trackRes.json();
                     
                     if (track.title) document.getElementById('title').innerText = track.title;
