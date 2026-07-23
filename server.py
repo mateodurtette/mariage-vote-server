@@ -2,6 +2,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 app = FastAPI()
 
@@ -13,6 +15,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Identifiants pour la recherche d'alternatives
+SPOTIPY_CLIENT_ID = "a0a55f8c047f44f9a58dbd4e0715553a"
+SPOTIPY_CLIENT_SECRET = "32de8e9ad70f43e0bdf409ee6be52532"
+sp_search = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=SPOTIPY_CLIENT_ID,
+    client_secret=SPOTIPY_CLIENT_SECRET
+))
+
 music_state = {
     "current_title": "Chargement...",
     "current_artist": "",
@@ -23,7 +33,7 @@ music_state = {
     "next_track_id": ""
 }
 
-suggested_song = None  # {"title": "Nom - Artiste", "votes": 0}
+suggested_song = None  # {"title": "", "artist": "", "uri": "", "cover": "", "votes": 0}
 votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
 
 class StateUpdate(BaseModel):
@@ -36,13 +46,15 @@ class StateUpdate(BaseModel):
     next_track_id: str
 
 class SuggestionRequest(BaseModel):
-    song_name: str
+    title: str
+    artist: str
+    uri: str
+    cover: str
 
 @app.post("/api/update-state")
 def update_state(data: StateUpdate):
     global music_state, votes, suggested_song
     
-    # Réinitialisation lors du changement de morceau prévu
     if data.next_track_id != music_state["next_track_id"]:
         votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
         suggested_song = None
@@ -58,6 +70,21 @@ def update_state(data: StateUpdate):
     }
     return {"status": "ok"}
 
+@app.get("/api/search-spotify")
+def search_spotify(q: str):
+    if not q or len(q) < 2:
+        return {"results": []}
+    results = sp_search.search(q=q, limit=3, type='track')
+    tracks = []
+    for item in results.get('tracks', {}).get('items', []):
+        tracks.append({
+            "title": item['name'],
+            "artist": item['artists'][0]['name'],
+            "uri": item['uri'],
+            "cover": item['album']['images'][0]['url'] if item['album']['images'] else ""
+        })
+    return {"results": tracks}
+
 @app.get("/api/get-state")
 def get_state():
     return {
@@ -70,7 +97,13 @@ def get_state():
 def suggest_song(data: SuggestionRequest):
     global suggested_song
     if not suggested_song:
-        suggested_song = {"title": data.song_name, "votes": 1}
+        suggested_song = {
+            "title": data.title,
+            "artist": data.artist,
+            "uri": data.uri,
+            "cover": data.cover,
+            "votes": 1
+        }
     return {"status": "ok"}
 
 @app.post("/api/vote-suggestion")
@@ -83,18 +116,14 @@ def vote_suggestion():
 @app.post("/api/vote/{vote_type}")
 def vote(vote_type: str, request: Request):
     client_ip = request.client.host
-    
     if music_state["current_remaining_seconds"] <= 30:
-        return {"status": "closed", "message": "Les votes sont clos !"}
-
+        return {"status": "closed"}
     if client_ip in votes["voted_ips"]:
-        return {"status": "already_voted", "message": "Vous avez déjà voté !"}
-
+        return {"status": "already_voted"}
     if vote_type == "up":
         votes["upvotes"] += 1
     elif vote_type == "down":
         votes["downvotes"] += 1
-        
     votes["voted_ips"].add(client_ip)
     return {"status": "ok"}
 
@@ -106,73 +135,71 @@ def read_root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>💒 Mariage de Lauriane & Matéo</title>
+        <title>💒 Mariage Lauriane & Matéo - Jukebox Auto</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #121212; color: white; text-align: center; padding: 15px; margin: 0; }
             .card { background: #1e1e1e; padding: 20px; border-radius: 16px; max-width: 380px; margin: 10px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-            
-            .now-playing { background: #2a2a2a; border-left: 4px solid #1db954; padding: 12px; border-radius: 10px; font-size: 0.85rem; text-align: left; margin-bottom: 15px; }
-            .now-playing-title { font-weight: bold; color: #1db954; font-size: 0.95rem; }
-            .now-playing-timer { color: #ffca28; font-weight: bold; margin-top: 4px; display: block; }
-
-            .header-title { font-size: 0.95rem; color: #ffca28; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
-            .header-subtitle { font-size: 0.8rem; color: #b3b3b3; margin-bottom: 15px; }
-
+            .now-playing { background: #2a2a2a; border-left: 4px solid #1db954; padding: 10px; border-radius: 10px; font-size: 0.85rem; text-align: left; margin-bottom: 15px; }
+            .now-playing-title { font-weight: bold; color: #1db954; }
             .timer-box { background: #282828; padding: 6px 12px; border-radius: 20px; display: inline-block; margin-bottom: 12px; font-weight: bold; font-size: 0.85rem; color: #ffca28; }
             .timer-closed { color: #e91429; }
-
-            img { width: 170px; height: 170px; border-radius: 12px; object-fit: cover; margin-bottom: 10px; }
-            h2 { font-size: 1.2rem; margin: 5px 0; }
-            p { color: #b3b3b3; margin: 0 0 15px; font-size: 0.85rem; }
-            
+            img.cover { width: 160px; height: 160px; border-radius: 12px; object-fit: cover; margin-bottom: 10px; }
             .btn-container { display: flex; justify-content: center; gap: 15px; margin-bottom: 15px; }
-            button { font-size: 1.3rem; padding: 10px 20px; border: none; border-radius: 30px; cursor: pointer; transition: all 0.2s; }
-            button:disabled { opacity: 0.3; cursor: not-allowed; filter: grayscale(100%); }
+            button { font-size: 1.3rem; padding: 10px 20px; border: none; border-radius: 30px; cursor: pointer; }
+            button:disabled { opacity: 0.3; filter: grayscale(100%); }
             .btn-up { background: #1db954; color: white; }
             .btn-down { background: #e91429; color: white; }
-            
             .suggest-box { background: #252525; padding: 12px; border-radius: 12px; margin-top: 15px; font-size: 0.85rem; }
-            .suggest-input { width: 60%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
-            .suggest-btn { padding: 8px 12px; border-radius: 20px; border: none; background: #1db954; color: white; font-weight: bold; cursor: pointer; margin-left: 5px; }
-            .suggestion-display { background: #333; padding: 10px; border-radius: 10px; margin-top: 10px; color: #ffca28; }
-            .vote-alt-btn { background: #ffca28; color: #121212; font-size: 0.85rem; padding: 6px 12px; border-radius: 15px; font-weight: bold; margin-top: 5px; border: none; cursor: pointer; }
-
-            .msg { font-size: 0.8rem; font-weight: bold; margin-top: 5px; }
+            .suggest-input { width: 80%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
+            .search-results { text-align: left; margin-top: 10px; background: #121212; border-radius: 8px; overflow: hidden; }
+            .search-item { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #222; cursor: pointer; }
+            .search-item img { width: 40px; height: 40px; border-radius: 4px; margin-right: 10px; }
+            .search-item-info { font-size: 0.8rem; flex-grow: 1; }
+            .search-item-info b { color: white; display: block; }
+            .search-item-info span { color: #b3b3b3; }
+            .suggestion-card { background: #2d2a1e; border: 1px solid #ffca28; padding: 10px; border-radius: 10px; margin-top: 10px; }
+            .vote-alt-btn { background: #ffca28; color: #121212; font-size: 0.85rem; padding: 8px 16px; border-radius: 15px; font-weight: bold; border: none; cursor: pointer; margin-top: 5px; }
         </style>
     </head>
     <body>
         <div class="card">
             <div class="now-playing">
-                🔊 <b>EN CE MOMENT DANS LA SALLE :</b><br>
-                <span id="current-title" class="now-playing-title">Chargement...</span> - <span id="current-artist"></span>
-                <span class="now-playing-timer">⏱️ Fin de la chanson dans : <span id="current-timer">--:--</span></span>
+                🔊 <b>DANS LA SALLE :</b> <span id="current-title" class="now-playing-title">...</span><br>
+                <small>Fin dans : <span id="current-timer" style="color:#ffca28;">--:--</span></small>
             </div>
 
-            <div class="header-title">💒 MARIAGE DE LAURIANE ET MATEO</div>
-            <div class="header-subtitle">prochaine chanson prévue :</div>
+            <div style="font-size:0.9rem; color:#ffca28; font-weight:bold;">💒 MARIAGE LAURIANE & MATÉO</div>
+            <div style="font-size:0.8rem; color:#b3b3b3; margin-bottom:10px;">Prochaine chanson prévue :</div>
 
             <div id="timer-container" class="timer-box">⏱️ Vote clos dans : <span id="timer">--</span></div><br>
 
-            <img id="cover" src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300" alt="Pochette">
-            <h2 id="title">Chargement...</h2>
-            <p id="artist"></p>
-            
+            <img id="cover" class="cover" src="https://via.placeholder.com/160" alt="Pochette">
+            <h2 id="title" style="font-size:1.1rem; margin:5px 0;">Chargement...</h2>
+            <p id="artist" style="color:#b3b3b3; font-size:0.85rem; margin-bottom:15px;"></p>
+
             <div class="btn-container">
                 <button id="btn-up" class="btn-up" onclick="sendVote('up')">👍 <span id="up-count">0</span></button>
                 <button id="btn-down" class="btn-down" onclick="sendVote('down')">👎 <span id="down-count">0</span></button>
             </div>
-            <div id="status-msg" class="msg"></div>
 
+            <!-- Recherche & Alternative Spotify -->
             <div class="suggest-box">
-                💡 <b>Proposer une alternative :</b>
+                💡 <b>Proposer une alternative Spotify :</b>
                 <div id="suggest-form" style="margin-top: 8px;">
-                    <input type="text" id="song-input" class="suggest-input" placeholder="Titre - Artiste...">
-                    <button onclick="submitSuggestion()" class="suggest-btn">Envoyer</button>
+                    <input type="text" id="song-input" class="suggest-input" placeholder="Chercher sur Spotify..." oninput="searchSpotify(this.value)">
+                    <div id="search-results" class="search-results"></div>
                 </div>
-                <div id="suggestion-area" style="display:none;" class="suggestion-display">
-                    <b>🔥 Alternative proposée par un invité :</b><br>
-                    <span id="suggested-song-name" style="font-size: 1rem; color: white;"></span><br>
-                    <button class="vote-alt-btn" onclick="voteSuggestion()">👍 Soutenir cette idée (<span id="alt-votes">0</span>)</button>
+
+                <div id="suggestion-area" style="display:none;" class="suggestion-card">
+                    <div style="font-size:0.75rem; color:#ffca28; font-weight:bold;">🔥 ALTERNATIVE EN COMPÉTITION :</div>
+                    <div style="display:flex; align-items:center; margin: 8px 0; text-align:left;">
+                        <img id="alt-cover" src="" style="width:45px; height:45px; border-radius:6px; margin-right:10px;">
+                        <div>
+                            <b id="alt-title" style="font-size:0.85rem;"></b><br>
+                            <span id="alt-artist" style="font-size:0.75rem; color:#b3b3b3;"></span>
+                        </div>
+                    </div>
+                    <button class="vote-alt-btn" onclick="voteSuggestion()">👍 Voter pour ce titre (<span id="alt-votes">0</span>)</button>
                 </div>
             </div>
         </div>
@@ -181,25 +208,59 @@ def read_root():
             let currentTrackId = "";
             let isClosed = false;
             let currentRemainingSec = 0;
+            let searchTimeout = null;
 
-            function formatTime(seconds) {
-                if (seconds <= 0) return "0:00";
-                const mins = Math.floor(seconds / 60);
-                const secs = seconds % 60;
-                return mins + ":" + (secs < 10 ? "0" : "") + secs;
+            function formatTime(sec) {
+                if (sec <= 0) return "0:00";
+                const m = Math.floor(sec / 60); const s = sec % 60;
+                return m + ":" + (s < 10 ? "0" : "") + s;
+            }
+
+            async function searchSpotify(query) {
+                clearTimeout(searchTimeout);
+                const resContainer = document.getElementById('search-results');
+                if (query.length < 2) { resContainer.innerHTML = ""; return; }
+
+                searchTimeout = setTimeout(async () => {
+                    const res = await fetch('/api/search-spotify?q=' + encodeURIComponent(query));
+                    const data = await res.json();
+                    resContainer.innerHTML = "";
+                    data.results.forEach(track => {
+                        const item = document.createElement('div');
+                        item.className = 'search-item';
+                        item.innerHTML = `
+                            <img src="${track.cover}">
+                            <div class="search-item-info">
+                                <b>${track.title}</b>
+                                <span>${track.artist}</span>
+                            </div>
+                        `;
+                        item.onclick = () => selectTrack(track);
+                        resContainer.appendChild(item);
+                    });
+                }, 300);
+            }
+
+            async function selectTrack(track) {
+                document.getElementById('search-results').innerHTML = "";
+                document.getElementById('song-input').value = "";
+                await fetch('/api/suggest-song', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(track)
+                });
+                refreshData();
             }
 
             async function refreshData() {
                 try {
                     const res = await fetch('/api/get-state');
                     const data = await res.json();
-                    
                     const state = data.state;
                     const votes = data.votes;
                     const suggestion = data.suggested_song;
 
-                    document.getElementById('current-title').innerText = state.current_title;
-                    document.getElementById('current-artist').innerText = state.current_artist;
+                    document.getElementById('current-title').innerText = state.current_title + " - " + state.current_artist;
                     currentRemainingSec = state.current_remaining_seconds;
                     document.getElementById('current-timer').innerText = formatTime(currentRemainingSec);
 
@@ -214,35 +275,30 @@ def read_root():
                     if (state.next_cover) document.getElementById('cover').src = state.next_cover;
 
                     const votingTimeLeft = currentRemainingSec - 30;
-
                     if (votingTimeLeft > 0) {
                         isClosed = false;
                         document.getElementById('timer-container').className = "timer-box";
                         document.getElementById('timer-container').innerHTML = "⏱️ Fin du vote dans : <span>" + formatTime(votingTimeLeft) + "</span>";
-                        if (!localStorage.getItem('voted_' + currentTrackId)) enableButtons();
                     } else {
                         isClosed = true;
                         document.getElementById('timer-container').className = "timer-box timer-closed";
-                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS (Tranché par le DJ !)";
-                        disableButtons("🔒 Le vote est clos pour ce morceau !");
+                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS (Sélection finale !)";
+                        disableButtons();
                     }
 
                     document.getElementById('up-count').innerText = votes.upvotes;
                     document.getElementById('down-count').innerText = votes.downvotes;
 
-                    // Gestion de l'affichage de la suggestion
                     if (suggestion) {
                         document.getElementById('suggest-form').style.display = 'none';
                         document.getElementById('suggestion-area').style.display = 'block';
-                        document.getElementById('suggested-song-name').innerText = suggestion.title;
+                        document.getElementById('alt-title').innerText = suggestion.title;
+                        document.getElementById('alt-artist').innerText = suggestion.artist;
+                        document.getElementById('alt-cover').src = suggestion.cover;
                         document.getElementById('alt-votes').innerText = suggestion.votes;
                     } else {
                         document.getElementById('suggest-form').style.display = 'block';
                         document.getElementById('suggestion-area').style.display = 'none';
-                    }
-
-                    if (localStorage.getItem('voted_' + currentTrackId) && !isClosed) {
-                        disableButtons("✅ Vote enregistré !");
                     }
 
                 } catch(e) { console.error(e); }
@@ -250,24 +306,9 @@ def read_root():
 
             async function sendVote(type) {
                 if (isClosed) return;
-                const res = await fetch('/api/vote/' + type, { method: 'POST' });
-                const data = await res.json();
-                if (data.status === 'ok') {
-                    localStorage.setItem('voted_' + currentTrackId, 'true');
-                    disableButtons("✅ Vote enregistré !");
-                }
-                refreshData();
-            }
-
-            async function submitSuggestion() {
-                const input = document.getElementById('song-input');
-                if (!input.value) return;
-                await fetch('/api/suggest-song', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ song_name: input.value })
-                });
-                input.value = "";
+                await fetch('/api/vote/' + type, { method: 'POST' });
+                localStorage.setItem('voted_' + currentTrackId, 'true');
+                disableButtons();
                 refreshData();
             }
 
@@ -276,16 +317,14 @@ def read_root():
                 refreshData();
             }
 
-            function disableButtons(msg) {
+            function disableButtons() {
                 document.getElementById('btn-up').disabled = true;
                 document.getElementById('btn-down').disabled = true;
-                document.getElementById('status-msg').innerText = msg;
             }
 
             function enableButtons() {
                 document.getElementById('btn-up').disabled = false;
                 document.getElementById('btn-down').disabled = false;
-                document.getElementById('status-msg').innerText = "";
             }
 
             setInterval(() => {
