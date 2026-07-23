@@ -1,113 +1,126 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Optional
 
-app = FastAPI(title="Serveur Cloud - Vote Mariage")
+app = FastAPI()
 
-# Données partagées en mémoire
-current_song_info = {
+# Permet à n'importe quel téléphone/navigateur de se connecter
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Stockage temporaire en mémoire
+current_track = {
     "title": "En attente du début de soirée...",
     "artist": "",
     "cover": "",
-    "track_id": None
+    "track_id": ""
 }
 
-votes_data = {
-    "upvotes": 0,
-    "downvotes": 0,
-    "voted_ips": set()
-}
+votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
 
-class SongUpdate(BaseModel):
+class TrackUpdate(BaseModel):
     title: str
     artist: str
-    cover: Optional[str] = ""
+    cover: str
     track_id: str
 
+@app.post("/api/update-track")
+def update_track(data: TrackUpdate):
+    global current_track, votes
+    # Si la chanson a changé, on réinitialise les votes
+    if data.track_id != current_track["track_id"]:
+        votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
+    
+    current_track = {
+        "title": data.title,
+        "artist": data.artist,
+        "cover": data.cover,
+        "track_id": data.track_id
+    }
+    return {"status": "ok"}
+
+@app.get("/api/get-track")
+def get_track():
+    return current_track
+
+@app.get("/api/get-votes")
+def get_votes():
+    return {"upvotes": votes["upvotes"], "downvotes": votes["downvotes"]}
+
+@app.post("/api/vote/{vote_type}")
+def vote(vote_type: str):
+    if vote_type == "up":
+        votes["upvotes"] += 1
+    elif vote_type == "down":
+        votes["downvotes"] += 1
+    return {"status": "ok", "upvotes": votes["upvotes"], "downvotes": votes["downvotes"]}
+
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    user_ip = request.client.host
-    has_voted = user_ip in votes_data["voted_ips"]
-
-    cover_html = f'<img src="{current_song_info["cover"]}" width="160" style="border-radius:12px; margin-bottom:15px;">' if current_song_info["cover"] else ''
-
-    return f"""
+def read_root():
+    return """
     <!DOCTYPE html>
-    <html>
+    <html lang="fr">
     <head>
-        <title>Mariage - Vote Musique</title>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>💍 Mariage DJ Vote</title>
         <style>
-            body {{ font-family: -apple-system, sans-serif; background-color: #121212; color: white; margin: 0; padding: 20px; text-align: center; }}
-            .card {{ background: #181818; border-radius: 16px; padding: 20px; max-width: 400px; margin: 0 auto; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }}
-            .btn {{ border: none; padding: 15px 25px; border-radius: 30px; font-size: 18px; font-weight: bold; cursor: pointer; margin: 10px 0; width: 90%; }}
-            .btn-up {{ background-color: #1DB954; color: white; }}
-            .btn-down {{ background-color: #E74C3C; color: white; }}
-            .btn-disabled {{ background-color: #444; color: #888; cursor: not-allowed; }}
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #121212; color: white; text-align: center; padding: 20px; margin: 0; }
+            .card { background: #1e1e1e; padding: 20px; border-radius: 16px; max-width: 350px; margin: 20px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+            img { width: 200px; height: 200px; border-radius: 12px; object-fit: cover; margin-bottom: 15px; }
+            h1 { font-size: 1.2rem; color: #1db954; margin-bottom: 5px; }
+            h2 { font-size: 1.4rem; margin: 10px 0 5px; }
+            p { color: #b3b3b3; margin: 0 0 20px; }
+            .btn-container { display: flex; justify-content: center; gap: 15px; }
+            button { font-size: 1.5rem; padding: 12px 24px; border: none; border-radius: 30px; cursor: pointer; transition: transform 0.1s; }
+            button:active { transform: scale(0.95); }
+            .btn-up { background: #1db954; color: white; }
+            .btn-down { background: #e91429; color: white; }
         </style>
     </head>
     <body>
         <div class="card">
-            <h3 style="color:#1DB954; margin-top:0;">💍 Mariage - Prochaine Chanson</h3>
-            {cover_html}
-            <h2 style="margin: 5px 0;">{current_song_info['title']}</h2>
-            <p style="color: #aaa; margin-top: 0;">{current_song_info['artist']}</p>
-            
-            <hr style="border-color: #282828; margin: 20px 0;">
-
-            {'<p style="color:#1DB954; font-weight:bold;">✅ Votre vote a été pris en compte !</p>' if has_voted else '<h3>Voulez-vous écouter ce titre ?</h3>'}
-
-            <button class="btn btn-up {'btn-disabled' if has_voted else ''}" onclick="vote('up')" {'disabled' if has_voted else ''}>
-                👍 Garder ({votes_data['upvotes']})
-            </button>
-            <button class="btn btn-down {'btn-disabled' if has_voted else ''}" onclick="vote('down')" {'disabled' if has_voted else ''}>
-                👎 Passer à la suivante ({votes_data['downvotes']})
-            </button>
+            <h1>💍 Mariage - Prochaine Chanson</h1>
+            <img id="cover" src="https://via.placeholder.com/200?text=Musique" alt="Pochette">
+            <h2 id="title">Chargement...</h2>
+            <p id="artist"></p>
+            <div class="btn-container">
+                <button class="btn-up" onclick="sendVote('up')">👍 <span id="up-count">0</span></button>
+                <button class="btn-down" onclick="sendVote('down')">👎 <span id="down-count">0</span></button>
+            </div>
         </div>
 
         <script>
-            function vote(type) {{
-                fetch('/vote/' + type, {{ method: 'POST' }}).then(() => location.reload());
-            }}
-            setInterval(() => location.reload(), 8000);
+            async function refreshData() {
+                try {
+                    const trackRes = await fetch('/api/get-track');
+                    const track = await trackRes.json();
+                    
+                    if (track.title) document.getElementById('title').innerText = track.title;
+                    if (track.artist) document.getElementById('artist').innerText = track.artist;
+                    if (track.cover) document.getElementById('cover').src = track.cover;
+
+                    const voteRes = await fetch('/api/get-votes');
+                    const votes = await voteRes.json();
+                    document.getElementById('up-count').innerText = votes.upvotes;
+                    document.getElementById('down-count').innerText = votes.downvotes;
+                } catch(e) { console.error(e); }
+            }
+
+            async function sendVote(type) {
+                await fetch('/api/vote/' + type, { method: 'POST' });
+                refreshData();
+            }
+
+            setInterval(refreshData, 2000);
+            refreshData();
         </script>
     </body>
     </html>
     """
-
-@app.post("/vote/{vote_type}")
-def vote(vote_type: str, request: Request):
-    user_ip = request.client.host
-    if user_ip in votes_data["voted_ips"]:
-        raise HTTPException(status_code=400, detail="Déjà voté")
-
-    if vote_type == "up":
-        votes_data["upvotes"] += 1
-    elif vote_type == "down":
-        votes_data["downvotes"] += 1
-
-    votes_data["voted_ips"].add(user_ip)
-    return {"status": "ok"}
-
-# Endpoints pour la communication avec l'ordinateur DJ
-@app.post("/api/update-track")
-def update_track(data: SongUpdate):
-    if current_song_info["track_id"] != data.track_id:
-        current_song_info["title"] = data.title
-        current_song_info["artist"] = data.artist
-        current_song_info["cover"] = data.cover
-        current_song_info["track_id"] = data.track_id
-        # Réinitialisation des votes pour la nouvelle chanson
-        votes_data["upvotes"] = 0
-        votes_data["downvotes"] = 0
-        votes_data["voted_ips"].clear()
-    return {"status": "updated"}
-
-@app.get("/api/get-votes")
-def get_votes():
-    return {
-        "upvotes": votes_data["upvotes"],
-        "downvotes": votes_data["downvotes"],
-        "track_id": current_song_info["track_id"]
-    }
