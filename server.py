@@ -2,8 +2,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
 
 app = FastAPI()
 
@@ -15,14 +13,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Identifiants pour la recherche d'alternatives
-SPOTIPY_CLIENT_ID = "a0a55f8c047f44f9a58dbd4e0715553a"
-SPOTIPY_CLIENT_SECRET = "32de8e9ad70f43e0bdf409ee6be52532"
-sp_search = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-    client_id=SPOTIPY_CLIENT_ID,
-    client_secret=SPOTIPY_CLIENT_SECRET
-))
-
 music_state = {
     "current_title": "Chargement...",
     "current_artist": "",
@@ -33,7 +23,10 @@ music_state = {
     "next_track_id": ""
 }
 
-suggested_song = None  # {"title": "", "artist": "", "uri": "", "cover": "", "votes": 0}
+# Stockage de la recherche et des suggestions
+search_query = None
+search_results = []
+suggested_song = None
 votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
 
 class StateUpdate(BaseModel):
@@ -45,6 +38,9 @@ class StateUpdate(BaseModel):
     next_cover: str
     next_track_id: str
 
+class QueryRequest(BaseModel):
+    query: str
+
 class SuggestionRequest(BaseModel):
     title: str
     artist: str
@@ -53,11 +49,13 @@ class SuggestionRequest(BaseModel):
 
 @app.post("/api/update-state")
 def update_state(data: StateUpdate):
-    global music_state, votes, suggested_song
+    global music_state, votes, suggested_song, search_query, search_results
     
     if data.next_track_id != music_state["next_track_id"]:
         votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
         suggested_song = None
+        search_query = None
+        search_results = []
     
     music_state = {
         "current_title": data.current_title,
@@ -70,20 +68,28 @@ def update_state(data: StateUpdate):
     }
     return {"status": "ok"}
 
-@app.get("/api/search-spotify")
-def search_spotify(q: str):
-    if not q or len(q) < 2:
-        return {"results": []}
-    results = sp_search.search(q=q, limit=3, type='track')
-    tracks = []
-    for item in results.get('tracks', {}).get('items', []):
-        tracks.append({
-            "title": item['name'],
-            "artist": item['artists'][0]['name'],
-            "uri": item['uri'],
-            "cover": item['album']['images'][0]['url'] if item['album']['images'] else ""
-        })
-    return {"results": tracks}
+# L'agent lit la requête de l'utilisateur
+@app.get("/api/get-pending-search")
+def get_pending_search():
+    return {"query": search_query}
+
+# L'agent dépose les résultats Spotify officiels
+@app.post("/api/set-search-results")
+def set_search_results(data: dict):
+    global search_results
+    search_results = data.get("results", [])
+    return {"status": "ok"}
+
+# L'utilisateur envoie sa recherche
+@app.post("/api/search")
+def search(data: QueryRequest):
+    global search_query, search_results
+    search_query = data.query
+    return {"status": "ok"}
+
+@app.get("/api/get-search-results")
+def get_search_results():
+    return {"results": search_results}
 
 @app.get("/api/get-state")
 def get_state():
@@ -95,7 +101,7 @@ def get_state():
 
 @app.post("/api/suggest-song")
 def suggest_song(data: SuggestionRequest):
-    global suggested_song
+    global suggested_song, search_query, search_results
     if not suggested_song:
         suggested_song = {
             "title": data.title,
@@ -104,6 +110,8 @@ def suggest_song(data: SuggestionRequest):
             "cover": data.cover,
             "votes": 1
         }
+        search_query = None
+        search_results = []
     return {"status": "ok"}
 
 @app.post("/api/vote-suggestion")
@@ -135,7 +143,7 @@ def read_root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>💒 Mariage Lauriane & Matéo - Jukebox Auto</title>
+        <title>💒 Mariage Lauriane & Matéo</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #121212; color: white; text-align: center; padding: 15px; margin: 0; }
             .card { background: #1e1e1e; padding: 20px; border-radius: 16px; max-width: 380px; margin: 10px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
@@ -151,7 +159,7 @@ def read_root():
             .btn-down { background: #e91429; color: white; }
             .suggest-box { background: #252525; padding: 12px; border-radius: 12px; margin-top: 15px; font-size: 0.85rem; }
             .suggest-input { width: 80%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
-            .search-results { text-align: left; margin-top: 10px; background: #121212; border-radius: 8px; overflow: hidden; }
+            .search-results { text-align: left; margin-top: 10px; background: #121212; border-radius: 8px; overflow: hidden; max-height: 200px; overflow-y: auto; }
             .search-item { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #222; cursor: pointer; }
             .search-item img { width: 40px; height: 40px; border-radius: 4px; margin-right: 10px; }
             .search-item-info { font-size: 0.8rem; flex-grow: 1; }
@@ -182,11 +190,10 @@ def read_root():
                 <button id="btn-down" class="btn-down" onclick="sendVote('down')">👎 <span id="down-count">0</span></button>
             </div>
 
-            <!-- Recherche & Alternative Spotify -->
             <div class="suggest-box">
                 💡 <b>Proposer une alternative Spotify :</b>
                 <div id="suggest-form" style="margin-top: 8px;">
-                    <input type="text" id="song-input" class="suggest-input" placeholder="Chercher sur Spotify..." oninput="searchSpotify(this.value)">
+                    <input type="text" id="song-input" class="suggest-input" placeholder="Tapez un titre / artiste..." oninput="triggerSearch(this.value)">
                     <div id="search-results" class="search-results"></div>
                 </div>
 
@@ -216,14 +223,28 @@ def read_root():
                 return m + ":" + (s < 10 ? "0" : "") + s;
             }
 
-            async function searchSpotify(query) {
+            async function triggerSearch(query) {
                 clearTimeout(searchTimeout);
-                const resContainer = document.getElementById('search-results');
-                if (query.length < 2) { resContainer.innerHTML = ""; return; }
+                if (query.length < 2) { 
+                    document.getElementById('search-results').innerHTML = ""; 
+                    return; 
+                }
 
                 searchTimeout = setTimeout(async () => {
-                    const res = await fetch('/api/search-spotify?q=' + encodeURIComponent(query));
+                    await fetch('/api/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: query })
+                    });
+                }, 300);
+            }
+
+            async function fetchSearchResults() {
+                const query = document.getElementById('song-input').value;
+                if (query.length >= 2) {
+                    const res = await fetch('/api/get-search-results');
                     const data = await res.json();
+                    const resContainer = document.getElementById('search-results');
                     resContainer.innerHTML = "";
                     data.results.forEach(track => {
                         const item = document.createElement('div');
@@ -238,7 +259,7 @@ def read_root():
                         item.onclick = () => selectTrack(track);
                         resContainer.appendChild(item);
                     });
-                }, 300);
+                }
             }
 
             async function selectTrack(track) {
@@ -282,7 +303,7 @@ def read_root():
                     } else {
                         isClosed = true;
                         document.getElementById('timer-container').className = "timer-box timer-closed";
-                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS (Sélection finale !)";
+                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS";
                         disableButtons();
                     }
 
@@ -300,6 +321,8 @@ def read_root():
                         document.getElementById('suggest-form').style.display = 'block';
                         document.getElementById('suggestion-area').style.display = 'none';
                     }
+
+                    fetchSearchResults();
 
                 } catch(e) { console.error(e); }
             }
