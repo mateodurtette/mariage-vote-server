@@ -2,7 +2,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Optional
 
 app = FastAPI()
 
@@ -14,11 +13,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Données globales
 music_state = {
     "current_track": {"title": "Chargement...", "artist": "", "remaining_seconds": 0},
     "next_track": {"title": "Chargement...", "artist": "", "cover": "", "track_id": ""},
-    "suggested_track": None  # {"title": "", "artist": "", "suggested_by": "", "votes": 0}
+    "suggested_track": None
 }
 
 votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
@@ -39,10 +37,10 @@ class SuggestionRequest(BaseModel):
 def update_state(data: StateUpdate):
     global music_state, votes
     
-    # Si la chanson suivante change, on réinitialise les votes
+    # Réinitialiser les votes si la chanson suivante change
     if data.next_track_id != music_state["next_track"]["track_id"]:
         votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
-        music_state["suggested_track"] = None  # Réinitialise la suggestion pour la nouvelle chanson
+        music_state["suggested_track"] = None
     
     music_state["current_track"] = {
         "title": data.current_title,
@@ -52,7 +50,7 @@ def update_state(data: StateUpdate):
     music_state["next_track"] = {
         "title": data.next_title,
         "artist": data.next_artist,
-        "cover": data.next_cover,
+        "cover": data.cover,
         "track_id": data.next_track_id
     }
     return {"status": "ok"}
@@ -67,10 +65,7 @@ def get_state():
 @app.post("/api/suggest-song")
 def suggest_song(data: SuggestionRequest):
     if not music_state["suggested_track"]:
-        music_state["suggested_track"] = {
-            "title": data.song_name,
-            "votes": 1
-        }
+        music_state["suggested_track"] = {"title": data.song_name, "votes": 1}
     else:
         music_state["suggested_track"]["votes"] += 1
     return {"status": "ok"}
@@ -107,9 +102,10 @@ def read_root():
             .card { background: #1e1e1e; padding: 20px; border-radius: 16px; max-width: 380px; margin: 10px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
             
             /* Bannière Musique En Cours */
-            .now-playing { background: #2a2a2a; border-left: 4px solid #1db954; padding: 10px; border-radius: 8px; font-size: 0.85rem; text-align: left; margin-bottom: 15px; }
-            .now-playing-title { font-weight: bold; color: #1db954; }
-            
+            .now-playing { background: #2a2a2a; border-left: 4px solid #1db954; padding: 12px; border-radius: 10px; font-size: 0.85rem; text-align: left; margin-bottom: 15px; }
+            .now-playing-title { font-weight: bold; color: #1db954; font-size: 0.95rem; }
+            .now-playing-timer { color: #ffca28; font-weight: bold; margin-top: 4px; display: block; }
+
             .header-title { font-size: 0.95rem; color: #ffca28; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
             .header-subtitle { font-size: 0.8rem; color: #b3b3b3; margin-bottom: 15px; }
 
@@ -128,7 +124,7 @@ def read_root():
             
             /* Section Suggestion */
             .suggest-box { background: #252525; padding: 12px; border-radius: 12px; margin-top: 15px; font-size: 0.85rem; }
-            .suggest-input { width: 70%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
+            .suggest-input { width: 65%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
             .suggest-btn { padding: 8px 12px; border-radius: 20px; border: none; background: #1db954; color: white; font-weight: bold; cursor: pointer; margin-left: 5px; }
             .suggestion-display { background: #333; padding: 8px; border-radius: 8px; margin-top: 8px; color: #ffca28; }
 
@@ -137,14 +133,14 @@ def read_root():
     </head>
     <body>
         <div class="card">
-            <!-- 1. Musique actuelle -->
+            <!-- 1. Musique actuelle avec Timer dédié -->
             <div class="now-playing">
                 🔊 <b>EN CE MOMENT DANS LA SALLE :</b><br>
-                <span id="current-title" class="now-playing-title">Chargement...</span> - <span id="current-artist"></span><br>
-                <small>⏱️ Temps restant : <b id="current-timer">--</b>s</small>
+                <span id="current-title" class="now-playing-title">Chargement...</span> - <span id="current-artist"></span>
+                <span class="now-playing-timer">⏱️ Fin de la chanson dans : <span id="current-timer">--:--</span></span>
             </div>
 
-            <!-- 2. Titre Personnalisé -->
+            <!-- 2. En-tête Mariage -->
             <div class="header-title">💒 MARIAGE DE LAURIANE ET MATEO</div>
             <div class="header-subtitle">prochaine chanson prévue :</div>
 
@@ -162,7 +158,7 @@ def read_root():
             </div>
             <div id="status-msg" class="msg"></div>
 
-            <!-- 3. Section Suggestion d'une chanson -->
+            <!-- 3. Suggestion par un invité -->
             <div class="suggest-box">
                 💡 <b>Proposer une alternative :</b>
                 <div style="margin-top: 8px;">
@@ -179,6 +175,15 @@ def read_root():
         <script>
             let currentTrackId = "";
             let isClosed = false;
+            let currentRemainingSec = 0;
+
+            // Formater les secondes en minutes:secondes (ex: 2:15)
+            function formatTime(seconds) {
+                if (seconds <= 0) return "0:00";
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return mins + ":" + (secs < 10 ? "0" : "") + secs;
+            }
 
             async function refreshData() {
                 try {
@@ -190,10 +195,11 @@ def read_root():
                     const votes = data.votes;
                     const suggestion = data.state.suggested_track;
 
-                    // Mettre à jour la musique actuelle
+                    // Mise à jour Chanson Actuelle
                     document.getElementById('current-title').innerText = current.title;
                     document.getElementById('current-artist').innerText = current.artist;
-                    document.getElementById('current-timer').innerText = current.remaining_seconds;
+                    currentRemainingSec = current.remaining_seconds;
+                    document.getElementById('current-timer').innerText = formatTime(currentRemainingSec);
 
                     // Prochaine chanson
                     if (next.track_id && next.track_id !== currentTrackId) {
@@ -206,26 +212,25 @@ def read_root():
                     document.getElementById('artist').innerText = next.artist;
                     if (next.cover) document.getElementById('cover').src = next.cover;
 
-                    // Timer du vote
-                    const remaining = current.remaining_seconds;
-                    const votingTimeLeft = remaining - 30;
+                    // Timer du vote (Fermeture à T-30s)
+                    const votingTimeLeft = currentRemainingSec - 30;
 
                     if (votingTimeLeft > 0) {
                         isClosed = false;
                         document.getElementById('timer-container').className = "timer-box";
-                        document.getElementById('timer-container').innerHTML = "⏱️ Fin du vote dans : <span>" + votingTimeLeft + "</span>s";
+                        document.getElementById('timer-container').innerHTML = "⏱️ Fin du vote dans : <span>" + formatTime(votingTimeLeft) + "</span>";
                         if (!localStorage.getItem('voted_' + currentTrackId)) enableButtons();
                     } else {
                         isClosed = true;
                         document.getElementById('timer-container').className = "timer-box timer-closed";
-                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS";
-                        disableButtons("🔒 Décision en cours d'application...");
+                        document.getElementById('timer-container').innerHTML = "🔒 VOTE CLOS (Tranché par le DJ !)";
+                        disableButtons("🔒 Le vote est clos pour ce morceau !");
                     }
 
                     document.getElementById('up-count').innerText = votes.upvotes;
                     document.getElementById('down-count').innerText = votes.downvotes;
 
-                    // Afficher la suggestion si présente
+                    // Afficher la suggestion
                     if (suggestion) {
                         document.getElementById('suggestion-area').style.display = 'block';
                         document.getElementById('suggested-song-name').innerText = suggestion.title;
@@ -275,7 +280,16 @@ def read_root():
                 document.getElementById('status-msg').innerText = "";
             }
 
-            setInterval(refreshData, 1000);
+            // Timer local chaque seconde
+            setInterval(() => {
+                if (currentRemainingSec > 0) {
+                    currentRemainingSec--;
+                    document.getElementById('current-timer').innerText = formatTime(currentRemainingSec);
+                }
+            }, 1000);
+
+            // Synchronisation réseau toutes les 2 secondes
+            setInterval(refreshData, 2000);
             refreshData();
         </script>
     </body>
