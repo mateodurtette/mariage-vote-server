@@ -23,10 +23,9 @@ music_state = {
     "next_track_id": ""
 }
 
-# Stockage de la recherche et des suggestions
 search_query = None
 search_results = []
-suggested_song = None
+suggested_song = None  # {"title": "", "artist": "", "uri": "", "cover": "", "proposer": "", "upvotes": 0, "downvotes": 0, "voted_ips": set()}
 votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
 
 class StateUpdate(BaseModel):
@@ -46,11 +45,13 @@ class SuggestionRequest(BaseModel):
     artist: str
     uri: str
     cover: str
+    proposer: str
 
 @app.post("/api/update-state")
 def update_state(data: StateUpdate):
     global music_state, votes, suggested_song, search_query, search_results
     
+    # Réinitialisation automatique des votes et suggestions au changement de morceau
     if data.next_track_id != music_state["next_track_id"]:
         votes = {"upvotes": 0, "downvotes": 0, "voted_ips": set()}
         suggested_song = None
@@ -68,19 +69,16 @@ def update_state(data: StateUpdate):
     }
     return {"status": "ok"}
 
-# L'agent lit la requête de l'utilisateur
 @app.get("/api/get-pending-search")
 def get_pending_search():
     return {"query": search_query}
 
-# L'agent dépose les résultats Spotify officiels
 @app.post("/api/set-search-results")
 def set_search_results(data: dict):
     global search_results
     search_results = data.get("results", [])
     return {"status": "ok"}
 
-# L'utilisateur envoie sa recherche
 @app.post("/api/search")
 def search(data: QueryRequest):
     global search_query, search_results
@@ -93,9 +91,24 @@ def get_search_results():
 
 @app.get("/api/get-state")
 def get_state():
+    # Calcul du score net de la suggestion
+    alt_data = None
+    if suggested_song:
+        net_score = suggested_song["upvotes"] - suggested_song["downvotes"]
+        alt_data = {
+            "title": suggested_song["title"],
+            "artist": suggested_song["artist"],
+            "uri": suggested_song["uri"],
+            "cover": suggested_song["cover"],
+            "proposer": suggested_song["proposer"],
+            "upvotes": suggested_song["upvotes"],
+            "downvotes": suggested_song["downvotes"],
+            "score": net_score
+        }
+
     return {
         "state": music_state,
-        "suggested_song": suggested_song,
+        "suggested_song": alt_data,
         "votes": {"upvotes": votes["upvotes"], "downvotes": votes["downvotes"]}
     }
 
@@ -108,17 +121,32 @@ def suggest_song(data: SuggestionRequest):
             "artist": data.artist,
             "uri": data.uri,
             "cover": data.cover,
-            "votes": 1
+            "proposer": data.proposer if data.proposer.strip() else "Un invité",
+            "upvotes": 1,
+            "downvotes": 0,
+            "voted_ips": set()
         }
         search_query = None
         search_results = []
     return {"status": "ok"}
 
-@app.post("/api/vote-suggestion")
-def vote_suggestion():
+@app.post("/api/vote-suggestion/{vote_type}")
+def vote_suggestion(vote_type: str, request: Request):
     global suggested_song
-    if suggested_song:
-        suggested_song["votes"] += 1
+    client_ip = request.client.host
+
+    if not suggested_song:
+        return {"status": "error"}
+
+    if client_ip in suggested_song["voted_ips"]:
+        return {"status": "already_voted"}
+
+    if vote_type == "up":
+        suggested_song["upvotes"] += 1
+    elif vote_type == "down":
+        suggested_song["downvotes"] += 1
+
+    suggested_song["voted_ips"].add(client_ip)
     return {"status": "ok"}
 
 @app.post("/api/vote/{vote_type}")
@@ -153,20 +181,24 @@ def read_root():
             .timer-closed { color: #e91429; }
             img.cover { width: 160px; height: 160px; border-radius: 12px; object-fit: cover; margin-bottom: 10px; }
             .btn-container { display: flex; justify-content: center; gap: 15px; margin-bottom: 15px; }
-            button { font-size: 1.3rem; padding: 10px 20px; border: none; border-radius: 30px; cursor: pointer; }
-            button:disabled { opacity: 0.3; filter: grayscale(100%); }
+            button { font-size: 1.3rem; padding: 10px 20px; border: none; border-radius: 30px; cursor: pointer; transition: all 0.2s; }
+            button:disabled { opacity: 0.3; filter: grayscale(100%); cursor: not-allowed; }
             .btn-up { background: #1db954; color: white; }
             .btn-down { background: #e91429; color: white; }
             .suggest-box { background: #252525; padding: 12px; border-radius: 12px; margin-top: 15px; font-size: 0.85rem; }
-            .suggest-input { width: 80%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; }
+            .suggest-input { width: 80%; padding: 8px; border-radius: 20px; border: none; outline: none; text-align: center; margin-bottom: 6px; }
             .search-results { text-align: left; margin-top: 10px; background: #121212; border-radius: 8px; overflow: hidden; max-height: 200px; overflow-y: auto; }
             .search-item { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #222; cursor: pointer; }
             .search-item img { width: 40px; height: 40px; border-radius: 4px; margin-right: 10px; }
             .search-item-info { font-size: 0.8rem; flex-grow: 1; }
             .search-item-info b { color: white; display: block; }
             .search-item-info span { color: #b3b3b3; }
-            .suggestion-card { background: #2d2a1e; border: 1px solid #ffca28; padding: 10px; border-radius: 10px; margin-top: 10px; }
-            .vote-alt-btn { background: #ffca28; color: #121212; font-size: 0.85rem; padding: 8px 16px; border-radius: 15px; font-weight: bold; border: none; cursor: pointer; margin-top: 5px; }
+            .suggestion-card { background: #2d2a1e; border: 1px solid #ffca28; padding: 12px; border-radius: 10px; margin-top: 10px; }
+            .alt-btn-container { display: flex; justify-content: center; gap: 10px; margin-top: 8px; }
+            .vote-alt-btn { font-size: 0.9rem; padding: 6px 14px; border-radius: 20px; border: none; font-weight: bold; cursor: pointer; }
+            .vote-alt-up { background: #1db954; color: white; }
+            .vote-alt-down { background: #e91429; color: white; }
+            .proposer-tag { font-size: 0.75rem; color: #ffca28; font-style: italic; margin-top: 4px; }
         </style>
     </head>
     <body>
@@ -193,20 +225,25 @@ def read_root():
             <div class="suggest-box">
                 💡 <b>Proposer une alternative Spotify :</b>
                 <div id="suggest-form" style="margin-top: 8px;">
-                    <input type="text" id="song-input" class="suggest-input" placeholder="Tapez un titre / artiste..." oninput="triggerSearch(this.value)">
+                    <input type="text" id="proposer-input" class="suggest-input" placeholder="Votre prénom..." style="width: 60%; font-size: 0.8rem;"><br>
+                    <input type="text" id="song-input" class="suggest-input" placeholder="Chercher un titre..." oninput="triggerSearch(this.value)">
                     <div id="search-results" class="search-results"></div>
                 </div>
 
                 <div id="suggestion-area" style="display:none;" class="suggestion-card">
-                    <div style="font-size:0.75rem; color:#ffca28; font-weight:bold;">🔥 ALTERNATIVE EN COMPÉTITION :</div>
+                    <div style="font-size:0.75rem; color:#ffca28; font-weight:bold;">🔥 ALTERNATIVE PROPOSÉE :</div>
                     <div style="display:flex; align-items:center; margin: 8px 0; text-align:left;">
                         <img id="alt-cover" src="" style="width:45px; height:45px; border-radius:6px; margin-right:10px;">
                         <div>
                             <b id="alt-title" style="font-size:0.85rem;"></b><br>
                             <span id="alt-artist" style="font-size:0.75rem; color:#b3b3b3;"></span>
+                            <div id="alt-proposer" class="proposer-tag"></div>
                         </div>
                     </div>
-                    <button class="vote-alt-btn" onclick="voteSuggestion()">👍 Voter pour ce titre (<span id="alt-votes">0</span>)</button>
+                    <div class="alt-btn-container">
+                        <button id="btn-alt-up" class="vote-alt-btn vote-alt-up" onclick="voteSuggestion('up')">👍 <span id="alt-up-count">0</span></button>
+                        <button id="btn-alt-down" class="vote-alt-btn vote-alt-down" onclick="voteSuggestion('down')">👎 <span id="alt-down-count">0</span></button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -263,6 +300,9 @@ def read_root():
             }
 
             async function selectTrack(track) {
+                const proposer = document.getElementById('proposer-input').value;
+                track.proposer = proposer;
+                
                 document.getElementById('search-results').innerHTML = "";
                 document.getElementById('song-input').value = "";
                 await fetch('/api/suggest-song', {
@@ -285,9 +325,11 @@ def read_root():
                     currentRemainingSec = state.current_remaining_seconds;
                     document.getElementById('current-timer').innerText = formatTime(currentRemainingSec);
 
+                    // RESET AUTOMATIQUE DE LA POSSIBILITÉ DE VOTER QUAND LA CHANSON CHANGE
                     if (state.next_track_id && state.next_track_id !== currentTrackId) {
                         currentTrackId = state.next_track_id;
                         localStorage.removeItem('voted_' + currentTrackId);
+                        localStorage.removeItem('alt_voted_' + currentTrackId);
                         enableButtons();
                     }
 
@@ -300,6 +342,7 @@ def read_root():
                         isClosed = false;
                         document.getElementById('timer-container').className = "timer-box";
                         document.getElementById('timer-container').innerHTML = "⏱️ Fin du vote dans : <span>" + formatTime(votingTimeLeft) + "</span>";
+                        if (!localStorage.getItem('voted_' + currentTrackId)) enableButtons();
                     } else {
                         isClosed = true;
                         document.getElementById('timer-container').className = "timer-box timer-closed";
@@ -310,13 +353,24 @@ def read_root():
                     document.getElementById('up-count').innerText = votes.upvotes;
                     document.getElementById('down-count').innerText = votes.downvotes;
 
+                    // Affichage de l'alternative
                     if (suggestion) {
                         document.getElementById('suggest-form').style.display = 'none';
                         document.getElementById('suggestion-area').style.display = 'block';
                         document.getElementById('alt-title').innerText = suggestion.title;
                         document.getElementById('alt-artist').innerText = suggestion.artist;
                         document.getElementById('alt-cover').src = suggestion.cover;
-                        document.getElementById('alt-votes').innerText = suggestion.votes;
+                        document.getElementById('alt-proposer').innerText = "Idée de : " + suggestion.proposer;
+                        document.getElementById('alt-up-count').innerText = suggestion.upvotes;
+                        document.getElementById('alt-down-count').innerText = suggestion.downvotes;
+
+                        if (localStorage.getItem('alt_voted_' + currentTrackId)) {
+                            document.getElementById('btn-alt-up').disabled = true;
+                            document.getElementById('btn-alt-down').disabled = true;
+                        } else if (!isClosed) {
+                            document.getElementById('btn-alt-up').disabled = false;
+                            document.getElementById('btn-alt-down').disabled = false;
+                        }
                     } else {
                         document.getElementById('suggest-form').style.display = 'block';
                         document.getElementById('suggestion-area').style.display = 'none';
@@ -329,25 +383,43 @@ def read_root():
 
             async function sendVote(type) {
                 if (isClosed) return;
-                await fetch('/api/vote/' + type, { method: 'POST' });
-                localStorage.setItem('voted_' + currentTrackId, 'true');
-                disableButtons();
+                const res = await fetch('/api/vote/' + type, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    localStorage.setItem('voted_' + currentTrackId, 'true');
+                    disableButtons();
+                }
                 refreshData();
             }
 
-            async function voteSuggestion() {
-                await fetch('/api/vote-suggestion', { method: 'POST' });
+            async function voteSuggestion(type) {
+                if (isClosed) return;
+                const res = await fetch('/api/vote-suggestion/' + type, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    localStorage.setItem('alt_voted_' + currentTrackId, 'true');
+                    document.getElementById('btn-alt-up').disabled = true;
+                    document.getElementById('btn-alt-down').disabled = true;
+                }
                 refreshData();
             }
 
             function disableButtons() {
                 document.getElementById('btn-up').disabled = true;
                 document.getElementById('btn-down').disabled = true;
+                document.getElementById('btn-alt-up').disabled = true;
+                document.getElementById('btn-alt-down').disabled = true;
             }
 
             function enableButtons() {
-                document.getElementById('btn-up').disabled = false;
-                document.getElementById('btn-down').disabled = false;
+                if (!localStorage.getItem('voted_' + currentTrackId)) {
+                    document.getElementById('btn-up').disabled = false;
+                    document.getElementById('btn-down').disabled = false;
+                }
+                if (!localStorage.getItem('alt_voted_' + currentTrackId)) {
+                    document.getElementById('btn-alt-up').disabled = false;
+                    document.getElementById('btn-alt-down').disabled = false;
+                }
             }
 
             setInterval(() => {
